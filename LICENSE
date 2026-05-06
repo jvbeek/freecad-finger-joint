@@ -1,0 +1,114 @@
+GNU LESSER GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
+
+Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+
+Everyone is permitted to copy and distribute verbatim copies of this
+license document, but changing it is not allowed.
+
+This version of the GNU Lesser General Public License incorporates the
+terms and conditions of version 3 of the GNU General Public License,
+supplemented by the additional permissions listed below.
+
+0. Additional Definitions.
+
+As used herein, "this License" refers to version 3 of the GNU Lesser
+General Public License, and the "GNU GPL" refers to version 3 of the
+GNU General Public License.
+
+"The Library" refers to a covered work governed by this License,
+other than an Application or a Combined Work as defined below.
+
+An "Application" is any work that makes use of an interface provided
+by the Library, but which is not otherwise based on the Library.
+Defining a subclass of a class defined by the Library is deemed a
+mode of using an interface provided by the Library.
+
+A "Combined Work" is a work produced by combining or linking an
+Application with the Library. The part of the Combined Work that is
+derived from the Library, and any part thereof that has been copied
+verbatim from the Library, remains the "Library" of that Combined
+Work. Everything else in the Combined Work is the "Application", even
+if it contains parts that were copied from the Library.
+
+1. Exception to Section 3 of the GNU GPL.
+
+You may convey a covered work under sections 3 and 4 of this License
+without being bound by section 3 of the GNU GPL.
+
+2. Conveying Modified Versions.
+
+If you modify a copy of the Library, and, in your modifications, a
+facility refers to a function or data to be supplied by the Application
+that uses that facility (other than as an argument passed when the
+facility is invoked), then you may convey a copy of the modified
+version:
+
+a) under this License, provided that you make a good faith effort to
+ensure that, in the event an Application does not supply the
+function or data, the facility still operates, and performs
+whatever part of its purpose remains meaningful, or
+
+b) under the GNU GPL, with none of the additional permissions of this
+License applicable.
+
+3. Object Code Inclusion.
+
+An Application need not be licensed as a whole under the GNU GPL
+provided that the Application would still qualify as an Application
+if the code that invokes the Library were removed.
+
+4. Combined Works.
+
+You may convey a Combined Work under terms of your choice that,
+taken together, effectively do not restrict modification of the
+portions of the Library contained in the Combined Work and reverse
+engineering for debugging such modifications, if you also do each of
+the following:
+
+a) Give prominent notice with each copy of the Combined Work of the
+Library's availability and its license.
+
+b) Accompany the Combined Work with a copy of the GNU GPL.
+
+c) Accompany the Combined Work with a copy of the GNU LGPL.
+
+5. Combined with Modified Library.
+
+You may convey a combined work based on a modified version of the
+Library under the terms of section 4, provided that you also include
+the terms of the GNU GPL for the modifications.
+
+6. Revised Versions.
+
+The Free Software Foundation may publish revised versions of the
+GNU Lesser General Public License from time to time.
+
+7. Additional Permissions.
+
+You may apply additional permissions to covered material as allowed
+under section 7 of the GNU GPL.
+
+8. Application to Combined Works.
+
+If you combine the Library with other software covered by the
+GNU GPL, the additional permissions of this License allow you to
+convey the combined work under the terms of the GNU GPL alone.
+
+9. Preservation of Free Software Designations.
+
+Free software designations are preserved in derived works.
+
+10. Disclaimer of Warranty.
+
+THERE IS NO WARRANTY FOR THE PROGRAM, TO THE EXTENT PERMITTED BY
+APPLICABLE LAW. EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT
+HOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM "AS IS" WITHOUT
+WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED.
+
+11. Limitation of Liability.
+
+IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING
+WILL ANY COPYRIGHT HOLDER BE LIABLE TO YOU FOR DAMAGES.
+
+END OF TERMS AND CONDITIONS
