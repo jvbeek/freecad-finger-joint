@@ -227,61 +227,75 @@ class VeneerProcessor:
 
         Tries multiple offset strategies for compatibility across FreeCAD versions.
         Uses arc joins to prevent laser-tip burn at sharp outer corners.
+        Falls back to scaling if all Part methods fail.
         """
-        strategies = [
-            # FreeCAD 1.0+: offset2D with fillet radius
-            lambda: self._try_offset2d_fillet(wire, distance),
-            # FreeCAD 1.0+: offset2D with simple offset
-            lambda: self._try_offset2d_simple(wire, distance),
-            # Legacy: Part.Wire.offset
-            lambda: self._try_offset_legacy(wire, distance),
-        ]
-        for strategy in strategies:
-            try:
-                result = strategy()
-                if result:
-                    FreeCAD.Console.PrintLog(
-                        f"veneer: offset {distance:.2f}mm succeeded\n"
-                    )
-                    return result
-            except Exception as e:
-                FreeCAD.Console.PrintLog(
-                    f"veneer: offset strategy failed: {e}\n"
-                )
-                continue
-        FreeCAD.Console.PrintLog(
-            f"veneer: WARNING — all offset strategies failed for distance={distance:.2f}mm\n"
-        )
+        # Try offset2D — available in FreeCAD 0.21+, but signature varies
+        if hasattr(wire, 'offset2D'):
+            for args in [
+                # Try keyword args first (FreeCAD 1.0+)
+                dict(fillet=0.5),
+                dict(fillet=1.0),
+                # No fillet
+                dict(),
+            ]:
+                try:
+                    result = wire.offset2D(distance, 0.01, **args)
+                    if result is not None and hasattr(result, 'Edges'):
+                        return [result]
+                except Exception:
+                    pass
+
+        # Try legacy offset method
+        if hasattr(wire, 'offset'):
+            for join_type in ['arc', 'round', '']:  # empty string = default
+                for tol in [0.01, 0.1, 1.0]:
+                    try:
+                        if join_type:
+                            result = wire.offset(distance, tol, join=join_type)
+                        else:
+                            result = wire.offset(distance, tol)
+                        if result is not None:
+                            if isinstance(result, list) and result:
+                                return result
+                            if hasattr(result, 'Edges'):
+                                return [result]
+                    except Exception:
+                        pass
+
+        # Nuclear option: scale outward from center
+        result = self._offset_by_scaling(wire, distance)
+        if result:
+            return [result]
+
         return []
 
-    def _try_offset2d_fillet(self, wire, distance):
-        """offset2D with round joins and fillet radius."""
-        if not hasattr(wire, 'offset2D'):
-            return []
-        result = wire.offset2D(distance, 0.01, fillet=0.5)
-        if result and hasattr(result, 'Edges'):
-            return [result]
-        return []
+    def _offset_by_scaling(self, wire: Part.Wire, distance: float) -> Optional[Part.Wire]:
+        """Fallback: scale the wire outward from its bounding box center."""
+        try:
+            bbox = wire.BoundBox
+            center = FreeCAD.Vector(
+                (bbox.XMin + bbox.XMax) / 2.0,
+                (bbox.YMin + bbox.YMax) / 2.0,
+                0.0
+            )
+            # Compute scaling factor: we want each side to extend by 'distance'
+            width = bbox.XMax - bbox.XMin
+            height = bbox.YMax - bbox.YMin
+            scale_x = (width + 2 * distance) / width
+            scale_y = (height + 2 * distance) / height
+            scale = max(scale_x, scale_y)  # uniform scale to preserve shape
 
-    def _try_offset2d_simple(self, wire, distance):
-        """offset2D with default joins."""
-        if not hasattr(wire, 'offset2D'):
-            return []
-        result = wire.offset2D(distance, 0.01)
-        if result and hasattr(result, 'Edges'):
-            return [result]
-        return []
-
-    def _try_offset_legacy(self, wire, distance):
-        """Legacy Part.Wire.offset."""
-        if not hasattr(wire, 'offset'):
-            return []
-        result = wire.offset(distance, 0.01)
-        if isinstance(result, list) and result:
-            return result
-        if result and hasattr(result, 'Edges'):
-            return [result]
-        return []
+            # Scale the wire
+            scaled = wire.copy()
+            # Build transform: center → origin → scale → back
+            mat = Base.Matrix()
+            mat.move(center.x, center.y, 0)
+            mat.scale(scale)
+            mat.move(-center.x, -center.y, 0)
+            scaled.transform(mat)
+            return scaled
+        except Exception:
+            return None
 
 
 # ===========================================================================
@@ -462,6 +476,11 @@ class VeneerOrchestrator:
     """GUI-driven veneer sheet generator."""
 
     def run(self):
+        import sys
+        fc_version = getattr(FreeCAD, 'Version', 'unknown')
+        print(f"veneer: starting (FreeCAD {fc_version}, Python {sys.version})")
+        FreeCAD.Console.PrintLog(f"veneer: starting (FreeCAD {fc_version})\n")
+
         sel = FreeCADGui.Selection.getSelection()
         if not sel:
             QtWidgets.QMessageBox.critical(
@@ -500,13 +519,18 @@ class VeneerOrchestrator:
         self._remove_objects(temp_objects)
 
         if not all_sheets:
-            FreeCAD.Console.PrintLog(
-                f"veneer: check Report View for details\n"
+            FreeCAD.Console.PrintError(
+                f"veneer: FAILED — no sheets generated.\n"
             )
+            FreeCAD.Console.PrintError(
+                f"veneer: check Report View above for debug output.\n"
+            )
+            print("veneer: FAILED — check Report View for details")
             QtWidgets.QMessageBox.warning(
                 None, "Veneer Generator",
                 "No veneer sheets could be generated.\n\n"
-                "Check the Report View for details.")
+                "Check the Report View panel for details.\n"
+                "(View → Panels → Report View)")
             return
 
         # Layout
@@ -615,7 +639,7 @@ class VeneerOrchestrator:
         buttons.rejected.connect(dialog.reject)
         form.addRow(buttons)
 
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return None
 
         return (
