@@ -25,6 +25,14 @@ try:
 except ImportError:
     from PySide2 import QtWidgets, QtCore
 
+# FreeCAD Base module (Matrix, Vector utilities)
+# Available in FreeCAD's Python environment; imported here for clarity
+try:
+    import Base
+except ImportError:
+    # Fallback: use FreeCAD.Base when Base isn't top-level
+    import FreeCAD.Base as Base
+
 # ===========================================================================
 # Configuration
 # ===========================================================================
@@ -58,10 +66,12 @@ class VeneerProcessor:
     """Generate flat veneer sheets from a 3D solid's faces."""
 
     def __init__(self, veneer_thickness: float, kerf: float,
-                 corner_overlap: float = 1.0):
+                 corner_overlap: float = 1.0,
+                 chamfer_distance: float = 0.0):
         self.thickness = veneer_thickness
         self.kerf = kerf
         self.corner_overlap = corner_overlap
+        self.chamfer_distance = chamfer_distance  # 45° notch at each corner
 
     def process_solid(self, solid: Part.Solid, body_name: str) -> List[VeneerSheet]:
         """Extract a veneer sheet for each face of the solid."""
@@ -139,8 +149,8 @@ class VeneerProcessor:
         # Kerf compensation: cut line is offset outward by kerf/2 so pieces
         #   are slightly oversized and fit snugly after laser removes material
         #
-        # Corner treatment: we cut each edge with a small miter/overlap so
-        #   the veneer pieces interlock cleanly.
+        # Corner treatment: chamfer each outer corner so adjacent veneer
+        #   pieces nest cleanly (45° notch at each corner).
 
         wrap_margin = self.thickness + self.corner_overlap
         kerf_half = self.kerf / 2.0
@@ -154,6 +164,10 @@ class VeneerProcessor:
             )
             return None
         cut_wire = max(cut_wire_list, key=lambda w: abs(w.Area))
+
+        # Chamfer corners for clean nesting (if chamfer is enabled)
+        if self.chamfer_distance > GEOM_EPS:
+            cut_wire = self._chamfer_corners(cut_wire, self.chamfer_distance)
 
         # Face boundary (blue in SVG): where the face actually ends
         ref_wire = outer_boundary.copy()
@@ -270,7 +284,11 @@ class VeneerProcessor:
         return []
 
     def _offset_by_scaling(self, wire: Part.Wire, distance: float) -> Optional[Part.Wire]:
-        """Fallback: scale the wire outward from its bounding box center."""
+        """Fallback: scale the wire outward from its bounding box center.
+        
+        Non-uniform scale to get equal extension on all four sides.
+        Works perfectly for rectangles/boxes; approximation for other shapes.
+        """
         try:
             bbox = wire.BoundBox
             center = FreeCAD.Vector(
@@ -278,24 +296,65 @@ class VeneerProcessor:
                 (bbox.YMin + bbox.YMax) / 2.0,
                 0.0
             )
-            # Compute scaling factor: we want each side to extend by 'distance'
             width = bbox.XMax - bbox.XMin
             height = bbox.YMax - bbox.YMin
+            if width < GEOM_EPS or height < GEOM_EPS:
+                return None
+            # Non-uniform scale so each side extends by exactly 'distance'
             scale_x = (width + 2 * distance) / width
             scale_y = (height + 2 * distance) / height
-            scale = max(scale_x, scale_y)  # uniform scale to preserve shape
 
-            # Scale the wire
-            scaled = wire.copy()
-            # Build transform: center → origin → scale → back
+            # Translate wire so center is at origin, scale, translate back
+            translated = wire.copy()
+            translated.translate(-center)
+            scaled = translated.copy()
             mat = Base.Matrix()
-            mat.move(center.x, center.y, 0)
-            mat.scale(scale)
-            mat.move(-center.x, -center.y, 0)
+            mat.scale(scale_x, scale_y, 1.0)
             scaled.transform(mat)
+            scaled.translate(center)
             return scaled
         except Exception:
             return None
+
+    def _chamfer_corners(self, wire: Part.Wire, distance: float) -> Part.Wire:
+        """Chamfer (45° notch) each sharp corner of a 2D wire.
+        
+        For rectangular veneer pieces, this creates 45° cuts at each corner
+        so adjacent pieces nest cleanly without double-thickness overlap.
+        
+        Args:
+            wire: 2D wire (face boundary or cut outline)
+            distance: chamfer length along each edge from the corner
+        
+        Returns:
+            New wire with chamfered corners, or original if chamfering fails.
+        """
+        try:
+            edges = wire.Edges
+            if len(edges) < 3:
+                return wire  # Not enough edges to chamfer
+
+            # Build a face from the wire so we can chamfer it
+            face = Part.Face(wire)
+            
+            # Collect all edges for chamfering
+            all_edges = face.Edges
+            
+            # Try chamfering with FreeCAD's built-in chamfer
+            # We chamfer each edge by 'distance' on both sides
+            chamfer_values = [distance] * len(all_edges)
+            chamfered = face.chamfer(chamfer_values)
+            
+            if chamfered:
+                # Extract the outer wire from the chamfered face
+                result = max(chamfered.Faces, key=lambda f: f.Area)
+                return result.OuterWire
+        except Exception as e:
+            FreeCAD.Console.PrintLog(
+                f"veneer:   chamfer warning: {e} — keeping original corners\n"
+            )
+        
+        return wire
 
 
 # ===========================================================================
@@ -381,12 +440,13 @@ class SvgExporter:
      width="{width:.1f}mm" height="{height:.1f}mm"
      viewBox="0 0 {width:.1f} {height:.1f}">
   <style>
-    .cut-line {{ stroke: #e00; stroke-width: {SVG_CUT_WIDTH}mm; fill: none; stroke-linejoin: round; }}
-    .face-line {{ stroke: #44f; stroke-width: {SVG_LINE_WIDTH}mm; fill: none; stroke-dasharray: 2,1; }}
-    .overlap-line {{ stroke: #0a0; stroke-width: {SVG_LINE_WIDTH}mm; fill: none; opacity: 0.5; }}
+    .cut-line {{ stroke: #e00; stroke-width: {SVG_CUT_WIDTH}mm; fill: none; stroke-linejoin: round; stroke-linecap: round; }}
+    .face-line {{ stroke: #44f; stroke-width: {SVG_LINE_WIDTH}mm; fill: none; stroke-dasharray: 2,1; stroke-linecap: round; }}
+    .overlap-line {{ stroke: #0a0; stroke-width: {SVG_LINE_WIDTH}mm; fill: none; stroke-dasharray: 1,2; opacity: 0.5; stroke-linecap: round; }}
     .label {{ font-family: "DejaVu Sans", Arial, sans-serif; font-size: {SVG_FONT_SIZE}mm; fill: #333; }}
     .sheet-border {{ stroke: #ccc; stroke-width: 0.1mm; fill: none; }}
   </style>
+  <!-- Layers: red=cut (laser path), blue=face boundary, green=wrap/bend line -->
   <!-- Sheet boundary -->
   <rect x="0" y="0" width="{width:.1f}" height="{height:.1f}" class="sheet-border"/>
   <g id="veneers">'''
@@ -405,9 +465,12 @@ class SvgExporter:
         """Add a veneer sheet as SVG elements."""
         mat = sheet.placement.toMatrix()
 
-        # Cut line (laser path)
+        # Cut line (laser path) — red, solid
         cut_path = self._wire_to_svg_path(sheet.outer_wire, mat, 'cut-line')
+        # Face boundary — blue, dashed
         ref_path = self._wire_to_svg_path(sheet.inner_wire, mat, 'face-line')
+        # Wrap/bend line — green, dotted
+        wrap_path = self._wire_to_svg_path(sheet.overlap_wire, mat, 'overlap-line')
 
         # Label position: center of cut wire, slightly above
         bb = sheet.outer_wire.BoundBox
@@ -422,6 +485,7 @@ class SvgExporter:
         label = f'''    <g id="sheet-{sheet.name}">
       {cut_path}
       {ref_path}
+      {wrap_path}
       <text x="{center.x:.2f}" y="{label_y:.2f}" text-anchor="middle" class="label">{sheet.name}</text>
     </g>'''
 
@@ -503,10 +567,10 @@ class VeneerOrchestrator:
             self._remove_objects(temp_objects)
             return
 
-        veneer_thickness, kerf, corner_overlap, svg_path = params
+        veneer_thickness, kerf, corner_overlap, chamfer, svg_path = params
 
         # Generate sheets
-        processor = VeneerProcessor(veneer_thickness, kerf, corner_overlap)
+        processor = VeneerProcessor(veneer_thickness, kerf, corner_overlap, chamfer)
         all_sheets: List[VeneerSheet] = []
 
         for solid_obj in solids:
@@ -558,7 +622,8 @@ class VeneerOrchestrator:
             f"Generated {len(all_sheets)} veneer sheets\n\n"
             f"Veneer thickness: {veneer_thickness:.2f} mm\n"
             f"Laser kerf: {kerf:.3f} mm\n"
-            f"Corner overlap: {corner_overlap:.1f} mm\n\n"
+            f"Corner overlap: {corner_overlap:.1f} mm\n"
+            f"Corner chamfer: {chamfer:.1f} mm\n\n"
             f"Sheet size: {width:.0f} × {height:.0f} mm\n"
             f"Total area: {total_area:.0f} mm²\n\n"
             f"SVG: {svg_path}"
@@ -599,11 +664,11 @@ class VeneerOrchestrator:
 
         return solids, temp_objects
 
-    def _show_dialog(self) -> Optional[Tuple[float, float, float, str]]:
-        """Show parameter dialog. Returns (thickness, kerf, overlap, svg_path)."""
+    def _show_dialog(self) -> Optional[Tuple[float, float, float, float, str]]:
+        """Show parameter dialog. Returns (thickness, kerf, overlap, chamfer, svg_path)."""
         dialog = QtWidgets.QDialog()
         dialog.setWindowTitle("Veneer Sheet Generator")
-        dialog.setFixedSize(350, 250)
+        dialog.setFixedSize(380, 310)
 
         form = QtWidgets.QFormLayout(dialog)
 
@@ -625,11 +690,18 @@ class VeneerOrchestrator:
         overlap_spin.setSuffix(" mm")
         overlap_spin.setDecimals(1)
 
+        chamfer_spin = QtWidgets.QDoubleSpinBox()
+        chamfer_spin.setRange(0.0, 10.0)
+        chamfer_spin.setValue(0.0)
+        chamfer_spin.setSuffix(" mm (0=off)")
+        chamfer_spin.setDecimals(1)
+
         svg_edit = QtWidgets.QLineEdit("veneers.svg")
 
         form.addRow("Veneer thickness:", thickness_spin)
         form.addRow("Laser kerf:", kerf_spin)
         form.addRow("Corner overlap:", overlap_spin)
+        form.addRow("Corner chamfer:", chamfer_spin)
         form.addRow("SVG output:", svg_edit)
 
         buttons = QtWidgets.QDialogButtonBox(
@@ -646,6 +718,7 @@ class VeneerOrchestrator:
             thickness_spin.value(),
             kerf_spin.value(),
             overlap_spin.value(),
+            chamfer_spin.value(),
             svg_edit.text()
         )
 
