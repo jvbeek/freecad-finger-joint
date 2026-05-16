@@ -66,12 +66,22 @@ class VeneerProcessor:
     def process_solid(self, solid: Part.Solid, body_name: str) -> List[VeneerSheet]:
         """Extract a veneer sheet for each face of the solid."""
         sheets: List[VeneerSheet] = []
+        FreeCAD.Console.PrintLog(
+            f"veneer: processing solid '{body_name}', {len(solid.Faces)} faces\n"
+        )
 
         for i, face in enumerate(solid.Faces):
             face_label = self._identify_face(face, i)
             sheet = self._make_sheet(face, face_label, body_name)
             if sheet:
                 sheets.append(sheet)
+                FreeCAD.Console.PrintLog(
+                    f"veneer:   ✓ face {i} → {sheet.name} ({sheet.area:.0f} mm²)\n"
+                )
+            else:
+                FreeCAD.Console.PrintLog(
+                    f"veneer:   ✗ face {i} ({face_label}) — failed\n"
+                )
 
         return sheets
 
@@ -103,11 +113,17 @@ class VeneerProcessor:
         # Project face to XY plane
         flat_face = self._project_to_xy(face)
         if not flat_face:
+            FreeCAD.Console.PrintLog(
+                f"veneer:   projection failed for {face_label}\n"
+            )
             return None
 
         # Get the outer wire of the flat face
         outer_boundary = flat_face.OuterWire
         if not outer_boundary:
+            FreeCAD.Console.PrintLog(
+                f"veneer:   no outer boundary for {face_label}\n"
+            )
             return None
 
         # Face dimensions (mm)
@@ -133,6 +149,9 @@ class VeneerProcessor:
         # Cut line (red in SVG): the laser follows this
         cut_wire_list = self._offset_wire(outer_boundary, cut_offset)
         if not cut_wire_list:
+            FreeCAD.Console.PrintLog(
+                f"veneer:   cut offset ({cut_offset:.2f}mm) failed for {face_label}\n"
+            )
             return None
         cut_wire = max(cut_wire_list, key=lambda w: abs(w.Area))
 
@@ -163,7 +182,7 @@ class VeneerProcessor:
             thickness=self.thickness,
             outer_wire=cut_wire,
             inner_wire=ref_wire,
-            overlap_wire=overlap_wire,
+            overlap_wire=wrap_wire,
             area=abs(cut_wire.Area),
             placement=FreeCAD.Placement()
         )
@@ -210,28 +229,58 @@ class VeneerProcessor:
         Uses arc joins to prevent laser-tip burn at sharp outer corners.
         """
         strategies = [
-            # FreeCAD >= 1.0 with offset2D
-            lambda: wire.offset2D(distance, 0.01, mode="normal", join="arc"),
-            # offset2D with fillet parameter
-            lambda: wire.offset2D(distance, 0.01, mode="normal", join="round", fillet=0.5),
-            # Legacy Part.Wire.offset (returns list of wires)
-            lambda: wire.offset(distance, 0.01, join="arc"),
-            # Legacy without join param
-            lambda: wire.offset(distance, 0.01),
+            # FreeCAD 1.0+: offset2D with fillet radius
+            lambda: self._try_offset2d_fillet(wire, distance),
+            # FreeCAD 1.0+: offset2D with simple offset
+            lambda: self._try_offset2d_simple(wire, distance),
+            # Legacy: Part.Wire.offset
+            lambda: self._try_offset_legacy(wire, distance),
         ]
         for strategy in strategies:
             try:
                 result = strategy()
-                if result is None:
-                    continue
-                if isinstance(result, list) and result:
+                if result:
+                    FreeCAD.Console.PrintLog(
+                        f"veneer: offset {distance:.2f}mm succeeded\n"
+                    )
                     return result
-                if hasattr(result, 'Edges'):
-                    return [result]
-            except (AttributeError, TypeError):
+            except Exception as e:
+                FreeCAD.Console.PrintLog(
+                    f"veneer: offset strategy failed: {e}\n"
+                )
                 continue
-            except Exception:
-                continue
+        FreeCAD.Console.PrintLog(
+            f"veneer: WARNING — all offset strategies failed for distance={distance:.2f}mm\n"
+        )
+        return []
+
+    def _try_offset2d_fillet(self, wire, distance):
+        """offset2D with round joins and fillet radius."""
+        if not hasattr(wire, 'offset2D'):
+            return []
+        result = wire.offset2D(distance, 0.01, fillet=0.5)
+        if result and hasattr(result, 'Edges'):
+            return [result]
+        return []
+
+    def _try_offset2d_simple(self, wire, distance):
+        """offset2D with default joins."""
+        if not hasattr(wire, 'offset2D'):
+            return []
+        result = wire.offset2D(distance, 0.01)
+        if result and hasattr(result, 'Edges'):
+            return [result]
+        return []
+
+    def _try_offset_legacy(self, wire, distance):
+        """Legacy Part.Wire.offset."""
+        if not hasattr(wire, 'offset'):
+            return []
+        result = wire.offset(distance, 0.01)
+        if isinstance(result, list) and result:
+            return result
+        if result and hasattr(result, 'Edges'):
+            return [result]
         return []
 
 
@@ -421,7 +470,7 @@ class VeneerOrchestrator:
             return
 
         # Collect solids
-        solids = self._collect_solids(sel)
+        solids, temp_objects = self._collect_solids(sel)
         if not solids:
             QtWidgets.QMessageBox.critical(
                 None, "Veneer Generator",
@@ -431,6 +480,8 @@ class VeneerOrchestrator:
         # Dialog
         params = self._show_dialog()
         if not params:
+            # Cleanup temp objects on cancel
+            self._remove_objects(temp_objects)
             return
 
         veneer_thickness, kerf, corner_overlap, svg_path = params
@@ -445,10 +496,17 @@ class VeneerOrchestrator:
             sheets = processor.process_solid(solid, name)
             all_sheets.extend(sheets)
 
+        # Cleanup temp objects
+        self._remove_objects(temp_objects)
+
         if not all_sheets:
+            FreeCAD.Console.PrintLog(
+                f"veneer: check Report View for details\n"
+            )
             QtWidgets.QMessageBox.warning(
                 None, "Veneer Generator",
-                "No veneer sheets could be generated.")
+                "No veneer sheets could be generated.\n\n"
+                "Check the Report View for details.")
             return
 
         # Layout
@@ -483,9 +541,21 @@ class VeneerOrchestrator:
         )
         QtWidgets.QMessageBox.information(None, "Veneer Generator", msg)
 
+    @staticmethod
+    def _remove_objects(objects):
+        """Safely remove objects from the active document."""
+        for obj in objects:
+            try:
+                FreeCAD.ActiveDocument.removeObject(obj.Name)
+            except Exception as e:
+                FreeCAD.Console.PrintLog(
+                    f"veneer: cleanup warning: {e}\n"
+                )
+
     def _collect_solids(self, objects) -> List[Any]:
         """Extract solids from selected objects."""
         solids = []
+        temp_objects = []  # track temp objects for cleanup
         for obj in objects:
             shape = getattr(obj, 'Shape', None)
             if not shape:
@@ -496,11 +566,14 @@ class VeneerOrchestrator:
                 # Compound or shell: add each solid
                 for i, s in enumerate(shape.Solids):
                     temp = FreeCAD.ActiveDocument.addObject(
-                        "Part::Feature", f"_temp_{i}"
+                        "Part::Feature", f"_temp_veneer_{i}"
                     )
                     temp.Shape = s
+                    temp.ViewObject.Visibility = False
                     solids.append(temp)
-        return solids
+                    temp_objects.append(temp)
+
+        return solids, temp_objects
 
     def _show_dialog(self) -> Optional[Tuple[float, float, float, str]]:
         """Show parameter dialog. Returns (thickness, kerf, overlap, svg_path)."""
@@ -552,13 +625,16 @@ class VeneerOrchestrator:
             svg_edit.text()
         )
 
-    def _create_compound(self, sheets: List[VeneerSheet]) -> Part.Compound:
+    def _create_compound(self, sheets: List[VeneerSheet]):
         """Create a FreeCAD compound from all sheets."""
         shapes = []
         for sheet in sheets:
             face = Part.Face(sheet.outer_wire)
             face.transformShape(sheet.placement.toMatrix())
             shapes.append(face)
+        # Part.makeCompound is preferred; fallback to Part.Compound for older FreeCAD
+        if hasattr(Part, 'makeCompound'):
+            return Part.makeCompound(shapes)
         return Part.Compound(shapes)
 
 
