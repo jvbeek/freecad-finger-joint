@@ -25,13 +25,7 @@ try:
 except ImportError:
     from PySide2 import QtWidgets, QtCore
 
-# FreeCAD Base module (Matrix, Vector utilities)
-# Available in FreeCAD's Python environment; imported here for clarity
-try:
-    import Base
-except ImportError:
-    # Fallback: use FreeCAD.Base when Base isn't top-level
-    import FreeCAD.Base as Base
+# Always use FreeCAD.Matrix() — Base module import is unreliable across versions.
 
 # ===========================================================================
 # Configuration
@@ -163,7 +157,8 @@ class VeneerProcessor:
                 f"veneer:   cut offset ({cut_offset:.2f}mm) failed for {face_label}\n"
             )
             return None
-        cut_wire = max(cut_wire_list, key=lambda w: abs(w.Area))
+        # Part.Wire has no .Area — use the enclosing Face area to pick the largest
+        cut_wire = max(cut_wire_list, key=lambda w: abs(Part.Face(w).Area))
 
         # Chamfer corners for clean nesting (if chamfer is enabled)
         if self.chamfer_distance > GEOM_EPS:
@@ -197,7 +192,7 @@ class VeneerProcessor:
             outer_wire=cut_wire,
             inner_wire=ref_wire,
             overlap_wire=wrap_wire,
-            area=abs(cut_wire.Area),
+            area=abs(Part.Face(cut_wire).Area),
             placement=FreeCAD.Placement()
         )
 
@@ -308,7 +303,7 @@ class VeneerProcessor:
             translated = wire.copy()
             translated.translate(-center)
             scaled = translated.copy()
-            mat = Base.Matrix()
+            mat = FreeCAD.Matrix()
             mat.scale(scale_x, scale_y, 1.0)
             scaled.transform(mat)
             scaled.translate(center)
@@ -649,7 +644,8 @@ class VeneerOrchestrator:
             shape = getattr(obj, 'Shape', None)
             if not shape:
                 continue
-            if hasattr(shape, 'isSolid') and shape.isSolid():
+            # ShapeType check is more reliable than isSolid() across FreeCAD versions
+            if shape.ShapeType == "Solid":
                 solids.append(obj)
             elif hasattr(shape, 'Solids') and shape.Solids:
                 # Compound or shell: add each solid
